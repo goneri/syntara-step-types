@@ -1,7 +1,7 @@
 # Runtime and gRPC contract
 
 Step containers implement the `syntara.container.v1alpha1` ABI defined in the
-`syntara-plugin-sdk` SDK (`ContainerService` proto). Each container exposes
+`syntara-plugin-contracts` package (`ContainerService` proto). Each container exposes
 a gRPC server on port 50051 and can serve multiple concurrent invocations.
 
 | RPC | Behaviour |
@@ -30,18 +30,20 @@ The default listener is `0.0.0.0:50051`. For development, connect directly or vi
 `kubectl port-forward`. Production deployments should use mutual TLS; configure via
 the Execution Plane's deployment manifests.
 
-## Failure codes
+## Failure results
 
-Steps raise `ContainerInvocationError(FailureCode.*, ...)` for controlled failures:
+Steps raise `StepFailure` for deliberate, controlled failures. The runtime sends these
+as a `Result` with a nonzero `status_code` and structured `error_result_json`. The
+`Failure` event is reserved for runtime or protocol failures.
 
-| Code | Meaning | Retryable |
-| --- | --- | --- |
-| `REMOTE_REJECTED` | Script non-zero exit; HTTP 4xx | No |
-| `UPSTREAM_TRANSIENT` | HTTP 429/502/503/504; network error | Yes |
-| `TIMEOUT` | Script or HTTP request timed out | Yes |
-| `POLICY_DENIED` | SSRF validation blocked the URL | No |
-| `CANCELLED` | Invocation cancelled; script process group or HTTP I/O stopped | No |
-| `INVALID_INPUT` | Input failed Pydantic model validation | No |
+| Code | Category | Meaning | Retryable |
+| --- | --- | --- | --- |
+| `REMOTE_REJECTED` | `BUSINESS` | Script non-zero exit; HTTP 4xx | No |
+| `UPSTREAM_TRANSIENT` | `DEPENDENCY` | HTTP 429/502/503/504; network error | Yes |
+| `TIMEOUT` | `TIMEOUT` | Script or HTTP request timed out | Yes |
+| `POLICY_DENIED` | `POLICY` | SSRF validation blocked the URL | No |
+| `CANCELLED` | `CANCELLED` | Invocation cancelled; script process group or HTTP I/O stopped | No |
+| `INVALID_INPUT` | `VALIDATION` | Input failed Pydantic model validation | No |
 
 ## Building and running locally
 
@@ -54,4 +56,4 @@ docker run --rm -p 50051:50051 localhost/syntara-node-script:local-test
 ```
 
 Inspect health or send an invocation using any gRPC client pointed at `localhost:50051`
-with the `syntara-plugin-sdk` proto (`container.proto`).
+with the `syntara-plugin-contracts` proto (`container.proto`).

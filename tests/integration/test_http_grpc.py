@@ -7,6 +7,8 @@ import json
 import pytest
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 
+from tests.integration.helpers import execute_output
+
 pytestmark = pytest.mark.integration
 
 _STEP_REVISION_ID = "syntara.http-request.http-request"
@@ -41,14 +43,7 @@ def _execute(
         credential_file_paths_json=b"{}",
         timeout_seconds=30,
     )
-    for event in stub.Execute(request, timeout=35):
-        if event.HasField("result"):
-            return json.loads(event.result.output_json)
-        if event.HasField("failure"):
-            pytest.fail(
-                f"Step returned failure — code={event.failure.code} message={event.failure.message}"
-            )
-    pytest.fail("Execute stream closed without a result or failure event")
+    return execute_output(stub, request, timeout=35)
 
 
 def test_health_check(http_stub: container_pb2_grpc.ContainerServiceStub) -> None:
@@ -97,10 +92,13 @@ def test_ssrf_private_ip_blocked(http_stub: container_pb2_grpc.ContainerServiceS
         timeout_seconds=10,
     )
     for event in http_stub.Execute(request, timeout=15):
-        if event.HasField("failure"):
-            assert event.failure.code == "POLICY_DENIED"
-            assert not event.failure.retryable
-            return
         if event.HasField("result"):
-            pytest.fail("Expected SSRF to be blocked but request succeeded")
-    pytest.fail("Execute stream closed without a failure event")
+            assert event.result.status_code != 0
+            error = json.loads(event.result.error_result_json)
+            assert error["code"] == "POLICY_DENIED"
+            assert error["category"] == "policy"
+            assert not error["retryable"]
+            return
+        if event.HasField("failure"):
+            pytest.fail(f"Expected an error result, got runtime failure: {event.failure.code}")
+    pytest.fail("Execute stream closed without an error result")
