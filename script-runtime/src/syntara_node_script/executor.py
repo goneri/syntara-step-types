@@ -323,7 +323,7 @@ async def run_script_async(
 ) -> dict[str, Any]:
     """Execute a script and return a raw result dict.
 
-    Returns keys: return_code, stdout, stderr, stdout_json.
+    Returns return_code, stdout, and stderr, with stdout_json for Python scripts.
     Raises ScriptExecutionError or ScriptTimeoutError on failure.
 
     Args:
@@ -342,19 +342,7 @@ async def run_script_async(
         passed to _execute_script_common is a hard fallback only — it does not
         replace the SDK-level cancellation signal.
     """
-    cgroup_limit = _get_cgroup_memory_limit()
-
-    if language == "bash":
-        # For bash, prepend ulimit command
-        if cgroup_limit:
-            ulimit_kb = int(cgroup_limit * 0.75 / 1024)
-            code = f"ulimit -v {ulimit_kb}\n{code}"
-        command = ["bash", "-c", code]
-    else:
-        # For Python, use launcher approach to preserve module semantics
-        if cgroup_limit:
-            code = _create_python_launcher_with_limit(code, int(cgroup_limit * 0.75))
-        command = [sys.executable, "-c", code]
+    command = _build_script_command(language, code, _get_cgroup_memory_limit())
 
     # Use cancellation event from SDK for timeout, with 10min fallback
     result = await _execute_script_common(
@@ -365,17 +353,9 @@ async def run_script_async(
         cancellation=cancellation,
     )
 
-    stdout_json = None
-    if language == "python" and result["stdout"].strip():
-        with contextlib.suppress(json.JSONDecodeError):
-            stdout_json = json.loads(result["stdout"])
-        if stdout_json is None:
-            lines = [line for line in result["stdout"].strip().split("\n") if line.strip()]
-            if lines:
-                with contextlib.suppress(json.JSONDecodeError):
-                    stdout_json = json.loads(lines[-1])
-
-    final_result = {**result, "stdout_json": stdout_json}
+    final_result = result
+    if language == "python":
+        final_result = {**result, "stdout_json": _parse_python_stdout_json(result["stdout"])}
 
     # Validate complete serialized result size to prevent SDK ABI_VIOLATION (PR #8 review fix)
     # Use actual serialization instead of estimation to:
@@ -393,3 +373,31 @@ async def run_script_async(
         )
 
     return final_result
+
+
+def _build_script_command(language: str, code: str, cgroup_limit: int | None) -> list[str]:
+    if language == "bash":
+        if cgroup_limit:
+            ulimit_kb = int(cgroup_limit * 0.75 / 1024)
+            code = f"ulimit -v {ulimit_kb}\n{code}"
+        return ["bash", "-c", code]
+
+    if cgroup_limit:
+        code = _create_python_launcher_with_limit(code, int(cgroup_limit * 0.75))
+    return [sys.executable, "-c", code]
+
+
+def _parse_python_stdout_json(stdout: str) -> Any | None:
+    if not stdout.strip():
+        return None
+
+    with contextlib.suppress(json.JSONDecodeError):
+        parsed = json.loads(stdout)
+        if parsed is not None:
+            return parsed
+
+    lines = [line for line in stdout.strip().split("\n") if line.strip()]
+    if lines:
+        with contextlib.suppress(json.JSONDecodeError):
+            return json.loads(lines[-1])
+    return None
